@@ -1,4 +1,4 @@
-"""Simula de uno a cinco simbolos LoRa con la ecuacion (2) del articulo.
+"""Simula de uno a cinco simbolos LoRa con la ecuacion (3) del articulo.
 
 Los simbolos son cadenas binarias para conservar los ceros a la izquierda.
 Requiere: numpy y matplotlib. Ejecutar con: python3 simulacion_lora_chirp.py
@@ -50,8 +50,10 @@ def modular_simbolo(valor, k, N):
     tiempo_vista = np.linspace(0, Ts, N * MUESTRAS_POR_MUESTRA + 1)
     # La pendiente 2*B/N viene de Delta(fase)=(valor+2*k+1)/N entre muestras.
     frecuencia_vista = np.mod(valor + 2 * B * tiempo_vista, N) * B / N
-    onda_vista = np.cos(2 * np.pi * fase_sierra(tiempo_vista, valor, N)) / np.sqrt(N)
-    return chirp, tiempo_vista, onda_vista, frecuencia_vista
+    fase = 2 * np.pi * fase_sierra(tiempo_vista, valor, N)
+    onda_vista_real = np.cos(fase) / np.sqrt(N)
+    onda_vista_imaginaria = np.sin(fase) / np.sqrt(N)
+    return chirp, tiempo_vista, onda_vista_real, onda_vista_imaginaria, frecuencia_vista
 
 
 def simular_lora(simbolos):
@@ -64,13 +66,11 @@ def simular_lora(simbolos):
 
     valores_enviados = [int(bits, 2) for bits in simbolos]
     valores_estimados = []
-    chirps = []
     vistas = []
 
     for valor in valores_enviados:
-        chirp, tiempo_vista, onda_vista, frecuencia_vista = modular_simbolo(valor, k, N)
-        chirps.append(chirp)
-        vistas.append((tiempo_vista, onda_vista, frecuencia_vista))
+        chirp, tiempo_vista, real, imaginaria, frecuencia_vista = modular_simbolo(valor, k, N)
+        vistas.append((tiempo_vista, real, imaginaria, frecuencia_vista))
 
         # Ecuacion (16): dechirp y FFT. El bin del maximo es el simbolo recibido.
         espectro = np.abs(np.fft.fft(chirp * downchirp))
@@ -84,40 +84,34 @@ def simular_lora(simbolos):
 def _graficar(vistas, simbolos, enviados, estimados, Ts, N):
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), constrained_layout=True)
 
-    for indice, ((tiempo, onda, frecuencia), bits) in enumerate(zip(vistas, simbolos)):
+    for indice, ((tiempo, real, imaginaria, frecuencia), bits, enviado, estimado) in enumerate(
+        zip(vistas, simbolos, enviados, estimados)
+    ):
         tiempo = indice * Ts + tiempo
-        etiqueta = f"#{indice + 1}: {bits}"
-        axes[0].plot(tiempo * 1e3, onda, label=etiqueta)
-        axes[1].plot(tiempo * 1e3, frecuencia / 1e3, label=etiqueta)
+        etiqueta = f"#{indice + 1}: {bits} | s={enviado}, FFT={estimado}"
+        axes[0].plot(tiempo * 1e3, real, label=etiqueta)
+        axes[1].plot(tiempo * 1e3, imaginaria, label=etiqueta)
+        axes[2].plot(tiempo * 1e3, frecuencia / 1e3)
 
     limites_ms = np.arange(len(vistas) + 1) * Ts * 1e3
     for limite in limites_ms[1:-1]:
         axes[0].axvline(limite, color="gray", linestyle="--", alpha=0.6)
         axes[1].axvline(limite, color="gray", linestyle="--", alpha=0.6)
+        axes[2].axvline(limite, color="gray", linestyle="--", alpha=0.6)
 
-    axes[0].set(title="Onda temporal sobreamostrada de los chirps transmitidos",
+    axes[0].set(title="Parte real del chirp: cos(fase)",
                 xlabel="Tiempo [ms]", ylabel="Amplitud")
     axes[0].grid(True, alpha=0.3)
     axes[0].legend(ncol=min(len(vistas), 3), fontsize="small")
 
-    axes[1].set(title="Frecuencia instantanea: sierra entre 0 y B",
-                xlabel="Tiempo [ms]", ylabel="Frecuencia [kHz]")
-    axes[1].set_ylim(-1, B / 1e3 + 1)
+    axes[1].set(title="Parte imaginaria del chirp: sin(fase)",
+                xlabel="Tiempo [ms]", ylabel="Amplitud")
     axes[1].grid(True, alpha=0.3)
 
-    posiciones = np.arange(1, len(vistas) + 1)
-    # Cada punto es un simbolo independiente: no se dibujan lineas entre ellos.
-    axes[2].scatter(posiciones, enviados, color="crimson", marker="o", label="enviado")
-    axes[2].scatter(posiciones, estimados, color="navy", marker="x", label="detectado por FFT")
-    for posicion, bits, valor in zip(posiciones, simbolos, enviados):
-        axes[2].annotate(bits, (posicion, valor), xytext=(0, 8),
-                         textcoords="offset points", ha="center", fontsize="small")
-    axes[2].set(title="Resultado de deteccion FFT para cada simbolo independiente",
-                xlabel="Numero de simbolo", ylabel="Valor decimal del simbolo",
-                xlim=(0.7, len(vistas) + 0.3), ylim=(-1, N))
-    axes[2].set_xticks(posiciones)
+    axes[2].set(title="Frecuencia instantanea: sierra entre 0 y B",
+                xlabel="Tiempo [ms]", ylabel="Frecuencia [kHz]")
+    axes[2].set_ylim(-1, B / 1e3 + 1)
     axes[2].grid(True, alpha=0.3)
-    axes[2].legend()
 
     output = "simulacion_lora_chirp.png"
     fig.savefig(output, dpi=160)
