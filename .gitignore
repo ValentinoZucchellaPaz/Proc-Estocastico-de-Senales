@@ -1,0 +1,14 @@
+# Entorno virtual local
+.venv/
+
+# Datos y resultados generados durante las prácticas
+02_clases_jupyter_ia/data/
+02_clases_jupyter_ia/output/
+
+# Archivos temporales de Jupyter y Python
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+
+# Configuración local de VS Code
+.vscode/
