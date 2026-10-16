@@ -12,6 +12,7 @@ import numpy as np
 
 B = 125_000  # ancho de banda [Hz]
 MAX_SIMBOLOS = 5
+MUESTRAS_POR_MUESTRA = 16  # solo para dibujar suavemente la onda temporal
 
 
 def validar_simbolos(simbolos):
@@ -29,69 +30,91 @@ def validar_simbolos(simbolos):
     return sf
 
 
+def fase_sierra(tiempo, valor, N):
+    """Fase continua cuya derivada es la sierra de frecuencia del chirp."""
+    # En un simbolo Ts=N/B, 2*B*Ts=2*N: la sierra recorre dos veces los N bins.
+    indice = valor + 2 * B * tiempo
+    ciclos_completos = np.floor(indice / N)
+    resto = np.mod(indice, N)
+    area_de_sierra = (ciclos_completos * N**2 + resto**2) / 2
+    return (area_de_sierra - valor**2 / 2) / (2 * N)
+
+
+def modular_simbolo(valor, k, N):
+    """Genera las muestras LoRa y una vista temporal sobreamostrada de la sierra."""
+    # Ecuacion (3) del articulo: forma discreta usada por el modulador y la FFT.
+    fase_discreta = ((valor + k) % N) * k / N
+    chirp = np.exp(1j * 2 * np.pi * fase_discreta) / np.sqrt(N)
+
+    Ts = N / B
+    tiempo_vista = np.linspace(0, Ts, N * MUESTRAS_POR_MUESTRA + 1)
+    # La pendiente 2*B/N viene de Delta(fase)=(valor+2*k+1)/N entre muestras.
+    frecuencia_vista = np.mod(valor + 2 * B * tiempo_vista, N) * B / N
+    onda_vista = np.cos(2 * np.pi * fase_sierra(tiempo_vista, valor, N)) / np.sqrt(N)
+    return chirp, tiempo_vista, onda_vista, frecuencia_vista
+
+
 def simular_lora(simbolos):
     """Modula y detecta una lista de 1 a 5 simbolos binarios de igual longitud."""
     sf = validar_simbolos(simbolos)
     N = 2**sf
-    fs = B  # una muestra cada T = 1/B, como en el articulo
     Ts = N / B
-    k = np.arange(N) # {1, 2, ..., 255}
+    k = np.arange(N)
     downchirp = np.exp(-1j * 2 * np.pi * k**2 / N)
 
     valores_enviados = [int(bits, 2) for bits in simbolos]
     valores_estimados = []
     chirps = []
+    vistas = []
 
     for valor in valores_enviados:
-        # Ecuacion (2): c[k] = 1/sqrt(N) exp(j 2pi ((s+k) mod N) k / N).
-        chirp = np.exp(1j * 2 * np.pi * ((valor + k) % N) * k / N) / np.sqrt(N)
+        chirp, tiempo_vista, onda_vista, frecuencia_vista = modular_simbolo(valor, k, N)
         chirps.append(chirp)
+        vistas.append((tiempo_vista, onda_vista, frecuencia_vista))
 
         # Ecuacion (16): dechirp y FFT. El bin del maximo es el simbolo recibido.
         espectro = np.abs(np.fft.fft(chirp * downchirp))
         valores_estimados.append(int(np.argmax(espectro)))
 
     assert valores_estimados == valores_enviados
-    _graficar(chirps, simbolos, valores_enviados, valores_estimados, k, fs, Ts, N)
+    _graficar(vistas, simbolos, valores_enviados, valores_estimados, Ts, N)
     return valores_estimados
 
 
-def _graficar(chirps, simbolos, enviados, estimados, k, fs, Ts, N):
+def _graficar(vistas, simbolos, enviados, estimados, Ts, N):
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), constrained_layout=True)
 
-    for indice, (chirp, bits) in enumerate(zip(chirps, simbolos)):
-        tiempo = indice * Ts + k / fs
+    for indice, ((tiempo, onda, frecuencia), bits) in enumerate(zip(vistas, simbolos)):
+        tiempo = indice * Ts + tiempo
         etiqueta = f"#{indice + 1}: {bits}"
-        axes[0].plot(tiempo * 1e3, chirp.real, marker=".", label=etiqueta)
+        axes[0].plot(tiempo * 1e3, onda, label=etiqueta)
+        axes[1].plot(tiempo * 1e3, frecuencia / 1e3, label=etiqueta)
 
-        # El articulo representa frecuencias en [0, B], no en [-B/2, B/2].
-        frecuencia = np.mod(np.angle(chirp[1:] * np.conj(chirp[:-1])), 2 * np.pi)
-        frecuencia *= fs / (2 * np.pi)
-        axes[1].step(tiempo[1:] * 1e3, frecuencia / 1e3, where="mid", label=etiqueta)
-
-    limites_ms = np.arange(len(chirps) + 1) * Ts * 1e3
+    limites_ms = np.arange(len(vistas) + 1) * Ts * 1e3
     for limite in limites_ms[1:-1]:
         axes[0].axvline(limite, color="gray", linestyle="--", alpha=0.6)
         axes[1].axvline(limite, color="gray", linestyle="--", alpha=0.6)
 
-    axes[0].set(title="Parte real de los chirps transmitidos",
+    axes[0].set(title="Onda temporal sobreamostrada de los chirps transmitidos",
                 xlabel="Tiempo [ms]", ylabel="Amplitud")
     axes[0].grid(True, alpha=0.3)
-    axes[0].legend(ncol=min(len(chirps), 3), fontsize="small")
+    axes[0].legend(ncol=min(len(vistas), 3), fontsize="small")
 
-    axes[1].set(title="Frecuencia instantanea (convencion del articulo: [0, B])",
+    axes[1].set(title="Frecuencia instantanea: sierra entre 0 y B",
                 xlabel="Tiempo [ms]", ylabel="Frecuencia [kHz]")
+    axes[1].set_ylim(-1, B / 1e3 + 1)
     axes[1].grid(True, alpha=0.3)
 
-    posiciones = np.arange(1, len(chirps) + 1)
-    axes[2].plot(posiciones, enviados, "o-", color="crimson", label="enviado")
-    axes[2].plot(posiciones, estimados, "x--", color="navy", label="detectado por FFT")
+    posiciones = np.arange(1, len(vistas) + 1)
+    # Cada punto es un simbolo independiente: no se dibujan lineas entre ellos.
+    axes[2].scatter(posiciones, enviados, color="crimson", marker="o", label="enviado")
+    axes[2].scatter(posiciones, estimados, color="navy", marker="x", label="detectado por FFT")
     for posicion, bits, valor in zip(posiciones, simbolos, enviados):
         axes[2].annotate(bits, (posicion, valor), xytext=(0, 8),
                          textcoords="offset points", ha="center", fontsize="small")
-    axes[2].set(title="Cada pico de FFT recupera el valor del simbolo enviado",
+    axes[2].set(title="Resultado de deteccion FFT para cada simbolo independiente",
                 xlabel="Numero de simbolo", ylabel="Valor decimal del simbolo",
-                xlim=(0.7, len(chirps) + 0.3), ylim=(-1, N))
+                xlim=(0.7, len(vistas) + 0.3), ylim=(-1, N))
     axes[2].set_xticks(posiciones)
     axes[2].grid(True, alpha=0.3)
     axes[2].legend()
@@ -106,5 +129,5 @@ def _graficar(chirps, simbolos, enviados, estimados, k, fs, Ts, N):
 
 if __name__ == "__main__":
     simular_lora(["00100101"])
-    simular_lora(["00100101", "11110000"])
+    # simular_lora(["00100101", "11110000"])
     # simular_lora(["00100101", "11110000", "00000011"])
