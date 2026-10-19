@@ -28,8 +28,9 @@ Desde un notebook abierto con la raíz del proyecto como carpeta de trabajo:
 from src.lora_chirp import modular_simbolo, demodular_simbolo, calc_error
 ```
 
-También están disponibles `validar_simbolos`, `fase_sierra`, `agregar_ruido_awgn`
-y `parametros_ruido_desde_snr`.
+También están disponibles `validar_simbolos`, `agregar_ruido_awgn` y
+`parametros_ruido_desde_snr`. La representación teórica para los gráficos se
+mantiene dentro del experimento, separada de la señal discreta que se procesa.
 
 Para ejecutar la comprobación experimental de la cadena LoRa:
 
