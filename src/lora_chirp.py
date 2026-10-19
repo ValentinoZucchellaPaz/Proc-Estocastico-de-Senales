@@ -121,20 +121,42 @@ def demodular_simbolo(
     return int(np.argmax(np.abs(espectro) ** 2)), dechirpeada, espectro
 
 
-def calc_error(bits_enviados: Sequence[str], bits_recibidos: Sequence[str]) -> float:
+def calc_error(
+    enviados: Sequence[str] | ArrayLike,
+    recibidos: Sequence[str] | ArrayLike,
+    bits_por_simbolo: int | None = None,
+) -> float:
     """Devuelve el BER: proporción de bits transmitidos incorrectamente.
 
-    El BER (Bit Error Rate) compara cada posición de ambas secuencias. No es
-    válido comparar secuencias de distinto largo porque ya no hay una relación
-    uno a uno entre los bits.
+    Sin ``bits_por_simbolo``, compara directamente dos secuencias de bits,
+    como ``"001"`` y ``"011"``. Si se indica ``bits_por_simbolo``, interpreta
+    las entradas como vectores de símbolos enteros y compara sus bits en
+    representación binaria natural. Así la misma función sirve para un ejemplo
+    pequeño y para la simulación vectorizada de una curva BER.
     """
-    if len(bits_enviados) != len(bits_recibidos):
+    if len(enviados) != len(recibidos):
         raise ValueError("las dos secuencias deben tener la misma longitud")
-    if not bits_enviados:
+    if len(enviados) == 0:
         raise ValueError("la secuencia de bits no puede estar vacía")
-    # True se interpreta como 1 y False como 0, de modo que la suma cuenta los
-    # bits diferentes. Dividir por el total convierte ese conteo en proporción.
-    return sum(a != b for a, b in zip(bits_enviados, bits_recibidos)) / len(bits_enviados)
+    if bits_por_simbolo is None:
+        # True se interpreta como 1 y False como 0, de modo que la suma cuenta
+        # los bits diferentes y dividir por el total da la proporción.
+        return sum(a != b for a, b in zip(enviados, recibidos)) / len(enviados)
+
+    if bits_por_simbolo <= 0:
+        raise ValueError("bits_por_simbolo debe ser positivo")
+    enviados = np.asarray(enviados, dtype=int)
+    recibidos = np.asarray(recibidos, dtype=int)
+    if enviados.ndim != 1 or recibidos.ndim != 1:
+        raise ValueError("los símbolos deben ser vectores de una dimensión")
+    limite = 2**bits_por_simbolo
+    if np.any((enviados < 0) | (enviados >= limite) | (recibidos < 0) | (recibidos >= limite)):
+        raise ValueError("los símbolos no caben en bits_por_simbolo bits")
+
+    diferencias = np.bitwise_xor(enviados, recibidos)
+    mascaras = 1 << np.arange(bits_por_simbolo)
+    errores = np.count_nonzero((diferencias[:, None] & mascaras) != 0)
+    return errores / (len(enviados) * bits_por_simbolo)
 
 
 def agregar_ruido_awgn(
@@ -159,7 +181,7 @@ def agregar_ruido_awgn(
     # Se generan dos gaussianas independientes: una para I (real) y otra para
     # Q (imaginaria). El factor 1/sqrt(2) reparte la potencia entre ambas.
     ruido = sigma / np.sqrt(2) * (
-        generador.standard_normal(senal.size) + 1j * generador.standard_normal(senal.size)
+        generador.standard_normal(senal.shape) + 1j * generador.standard_normal(senal.shape)
     )
     return senal + ruido, ruido
 
