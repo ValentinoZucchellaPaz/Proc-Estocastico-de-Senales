@@ -37,3 +37,7 @@ Para ejecutar la comprobación experimental de la cadena LoRa:
 ```bash
 python src/experimentacion/validar_lora_chirp.py
 ```
+
+La variable `simbolos` en ese archivo admite una trama de hasta cinco palabras
+binarias de igual longitud. Cada símbolo se dibuja consecutivamente en las
+mismas figuras temporal, teórica y espectral.

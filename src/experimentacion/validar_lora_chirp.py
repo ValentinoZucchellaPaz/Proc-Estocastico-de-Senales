@@ -4,6 +4,7 @@ Ejecutar directamente con:
     python src/experimentacion/validar_lora_chirp.py
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 import sys
 
@@ -53,24 +54,28 @@ def _vista_teorica_chirp(
 
 
 def _guardar_vista_chirp(
-    tiempo: MuestrasReales,
-    real: MuestrasReales,
-    imaginaria: MuestrasReales,
-    frecuencia: MuestrasReales,
+    vistas: Sequence[tuple[MuestrasReales, MuestrasReales, MuestrasReales, MuestrasReales]],
+    etiquetas: Sequence[str],
+    limites_ms: MuestrasReales,
     nombre: str,
     descripcion: str,
     estilo: str,
 ) -> Path:
-    """Guarda una sola representación del chirp para no mezclar conceptos."""
+    """Guarda en una figura las vistas de todos los símbolos de una trama."""
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), constrained_layout=True)
-    axes[0].plot(tiempo * 1e3, real, estilo)
+    for (tiempo, real, imaginaria, frecuencia), etiqueta in zip(vistas, etiquetas):
+        axes[0].plot(tiempo * 1e3, real, estilo, label=etiqueta)
+        axes[1].plot(tiempo * 1e3, imaginaria, estilo)
+        axes[2].plot(tiempo * 1e3, frecuencia / 1e3, estilo)
+
     axes[0].set(title=f"{descripcion}\nParte real", xlabel="Tiempo [ms]", ylabel="Amplitud")
-    axes[1].plot(tiempo * 1e3, imaginaria, estilo)
     axes[1].set(title="Parte imaginaria", xlabel="Tiempo [ms]", ylabel="Amplitud")
-    axes[2].plot(tiempo * 1e3, frecuencia / 1e3, estilo)
     axes[2].set(title="Frecuencia instantánea", xlabel="Tiempo [ms]", ylabel="Frecuencia [kHz]")
     for ax in axes:
+        for limite in limites_ms:
+            ax.axvline(limite, color="gray", linestyle="--", alpha=0.5)
         ax.grid(True, alpha=0.3)
+    axes[0].legend(ncol=min(len(etiquetas), 3), fontsize="small")
     ruta = CARPETA_GRAFICOS / nombre
     fig.savefig(ruta, dpi=160)
     plt.close(fig)
@@ -78,62 +83,85 @@ def _guardar_vista_chirp(
 
 
 def guardar_graficos(
-    chirp: ArrayLike,
-    espectro: ArrayLike,
-    enviado: int,
-    estimado: int,
+    chirps: Sequence[ArrayLike],
+    espectros: Sequence[ArrayLike],
+    enviados: Sequence[int],
+    estimados: Sequence[int],
     ancho_banda: float = ANCHO_BANDA,
     muestras_por_muestra: int = 16,
 ) -> tuple[Path, Path, Path]:
-    """Guarda por separado la señal discreta y su modelo teórico suavizado.
+    """Guarda una trama de símbolos en gráficos temporales y espectrales comunes.
 
-    ``chirp_muestras_discretas.png`` contiene sólo las ``N`` muestras que salen
-    del modulador y que efectivamente se transmiten. ``chirp_teorico.png`` no
-    agrega muestras a la simulación: muestra el modelo continuo entre ellas
-    para hacer visible la rampa de frecuencia. Se guardan en archivos distintos
-    para no confundir la curva explicativa con una señal real de mayor resolución.
+    Todos los símbolos aparecen uno después de otro en el mismo eje temporal.
+    Las líneas verticales grises marcan dónde termina cada símbolo. La figura
+    discreta contiene sólo las ``N`` muestras que se transmiten por símbolo;
+    la teórica dibuja el modelo continuo entre ellas. El espectro superpone una
+    curva por cada recepción para comparar los bins detectados.
 
     ``muestras_por_muestra`` controla sólo la densidad de la línea teórica.
     Por ejemplo, 16 produce ``16 * N + 1`` puntos para verla suave.
     """
     CARPETA_GRAFICOS.mkdir(exist_ok=True)
-    chirp = np.asarray(chirp)
-    N = len(chirp)
+    if not chirps:
+        raise ValueError("debe haber al menos un chirp para graficar")
+    if not (len(chirps) == len(espectros) == len(enviados) == len(estimados)):
+        raise ValueError("chirps, espectros, enviados y estimados deben tener la misma longitud")
+
+    chirps = [np.asarray(chirp) for chirp in chirps]
+    espectros = [np.asarray(espectro) for espectro in espectros]
+    N = len(chirps[0])
+    if any(len(chirp) != N for chirp in chirps) or any(len(espectro) != N for espectro in espectros):
+        raise ValueError("todos los chirps y espectros deben tener N muestras")
+
     k = np.arange(N)
+    duracion_simbolo = N / ancho_banda
+    limites_ms = np.arange(1, len(chirps)) * duracion_simbolo * 1e3
+    etiquetas = [f"#{indice}: s={enviado}" for indice, enviado in enumerate(enviados, start=1)]
 
-    # La vista discreta usa la salida del modulador, no una reconstrucción.
-    tiempo_discreto = k / ancho_banda
-    frecuencia_discreta = np.mod(enviado + 2 * k, N) * ancho_banda / N
+    # Cada vista se desplaza Ts para que toda la trama quede en un único gráfico.
+    vistas_discretas = []
+    vistas_teoricas = []
+    for indice, (chirp, enviado) in enumerate(zip(chirps, enviados)):
+        desplazamiento = indice * duracion_simbolo
+        tiempo_discreto = desplazamiento + k / ancho_banda
+        frecuencia_discreta = np.mod(enviado + 2 * k, N) * ancho_banda / N
+        vistas_discretas.append(
+            (tiempo_discreto, chirp.real, chirp.imag, frecuencia_discreta)
+        )
+
+        tiempo, real, imaginaria, frecuencia = _vista_teorica_chirp(
+            enviado, N, ancho_banda, muestras_por_muestra
+        )
+        vistas_teoricas.append((desplazamiento + tiempo, real, imaginaria, frecuencia))
+
     ruta_muestras = _guardar_vista_chirp(
-        tiempo_discreto,
-        chirp.real,
-        chirp.imag,
-        frecuencia_discreta,
+        vistas_discretas,
+        etiquetas,
+        limites_ms,
         "chirp_muestras_discretas.png",
-        f"Chirp discreto: N={N} muestras reales",
-        "o-",
+        f"Trama discreta: {len(chirps)} símbolos de N={N} muestras",
+        "-",
     )
 
-    # La vista teórica se mantiene aquí —junto al código de gráficos— porque
-    # no forma parte de la cadena de transmisión ni de la decisión por FFT.
-    tiempo, real, imaginaria, frecuencia = _vista_teorica_chirp(
-        enviado, N, ancho_banda, muestras_por_muestra
-    )
     ruta_teorico = _guardar_vista_chirp(
-        tiempo,
-        real,
-        imaginaria,
-        frecuencia,
+        vistas_teoricas,
+        etiquetas,
+        limites_ms,
         "chirp_teorico.png",
-        f"Modelo teórico del chirp ({muestras_por_muestra}× más puntos)",
+        f"Modelo teórico: {len(chirps)} símbolos ({muestras_por_muestra}× más puntos)",
         "-",
     )
 
     fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
-    ax.stem(np.arange(len(espectro)), np.abs(espectro) ** 2, basefmt=" ")
-    ax.axvline(enviado, color="tab:green", linestyle="--", label=f"enviado: s={enviado}")
-    ax.axvline(estimado, color="tab:red", linestyle=":", label=f"detectado: s={estimado}")
-    ax.set(title="Espectro después del dechirp", xlabel="Bin de la FFT", ylabel="Energía")
+    for indice, (espectro, enviado, estimado) in enumerate(zip(espectros, enviados, estimados), start=1):
+        energia = np.abs(espectro) ** 2
+        linea, = ax.plot(
+            np.arange(N), energia, label=f"#{indice}: enviado s={enviado}, FFT={estimado}"
+        )
+        ax.axvline(enviado, color=linea.get_color(), linestyle="--", alpha=0.6)
+        ax.plot(estimado, energia[estimado], "x", color=linea.get_color(), markersize=8)
+    ax.set(title="Espectros después del dechirp", xlabel="Bin de la FFT", ylabel="Energía")
+    ax.set_xlim(-1, N)
     ax.grid(True, alpha=0.3)
     ax.legend()
     ruta_espectro = CARPETA_GRAFICOS / "espectro_dechirp.png"
@@ -143,22 +171,27 @@ def guardar_graficos(
 
 
 def main() -> None:
-    bits = "00100101"
-    sf = validar_simbolos([bits])
+    # Agregá o quitá palabras binarias aquí para simular una trama más corta o larga.
+    simbolos = ["00100101", "11110000", "00000011"]
+    sf = validar_simbolos(simbolos)
     N = 2**sf
-    enviado = int(bits, 2)
-    chirp = modular_simbolo(enviado, np.arange(N), N)
+    enviados = [int(bits, 2) for bits in simbolos]
+    chirps = [modular_simbolo(enviado, np.arange(N), N) for enviado in enviados]
 
-    potencia_senal = np.mean(np.abs(chirp) ** 2)
+    potencia_senal = np.mean(np.abs(chirps[0]) ** 2)
     _, sigma = parametros_ruido_desde_snr(10, potencia_senal)
-    recibida, _ = agregar_ruido_awgn(chirp, sigma, np.random.default_rng(2026))
-    estimado, _, espectro = demodular_simbolo(recibida)
+    generador = np.random.default_rng(2026)
+    recibidas = [agregar_ruido_awgn(chirp, sigma, generador)[0] for chirp in chirps]
+    resultados = [demodular_simbolo(recibida) for recibida in recibidas]
+    estimados = [resultado[0] for resultado in resultados]
+    espectros = [resultado[2] for resultado in resultados]
 
-    assert estimado == enviado
+    assert estimados == enviados
     ruta_muestras, ruta_teorico, ruta_espectro = guardar_graficos(
-        chirp, espectro, enviado, estimado
+        chirps, espectros, enviados, estimados
     )
-    print(f"Enviado: {bits} (s={enviado}); detectado: s={estimado}")
+    for bits, enviado, estimado in zip(simbolos, enviados, estimados):
+        print(f"Enviado: {bits} (s={enviado}); detectado: s={estimado}")
     print(f"Gráficos guardados en: {ruta_muestras}, {ruta_teorico} y {ruta_espectro}")
 
 
