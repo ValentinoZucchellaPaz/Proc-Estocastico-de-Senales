@@ -71,9 +71,8 @@ def modular_simbolo(
 
     Notes
     -----
-    Esta función no crea vectores de tiempo ni curvas suavizadas. Eso pertenece
-    a la visualización en ``src/experimentacion``: separar ambos casos evita
-    confundir la señal real de ``N`` muestras con su modelo teórico continuo.
+    Esta función no crea gráficos. Cada símbolo tiene exactamente ``N``
+    muestras, como establece la ecuación (3) del artículo de referencia.
     """
     # Convertir k a array permite aplicar la ecuación a todas las muestras a la vez.
     k = np.asarray(k)

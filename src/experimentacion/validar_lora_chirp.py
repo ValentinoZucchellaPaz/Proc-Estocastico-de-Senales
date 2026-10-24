@@ -32,27 +32,6 @@ ANCHO_BANDA: float = 125_000
 MuestrasReales = NDArray[np.float64]
 
 
-def _fase_sierra(
-    tiempo: MuestrasReales, valor: int, N: int, ancho_banda: float
-) -> MuestrasReales:
-    """Devuelve la fase continua en ciclos para la curva teórica del chirp."""
-    indice = valor + 2 * ancho_banda * np.asarray(tiempo)
-    ciclos_completos = np.floor(indice / N)
-    resto = np.mod(indice, N)
-    area_de_sierra = (ciclos_completos * N**2 + resto**2) / 2
-    return (area_de_sierra - valor**2 / 2) / (2 * N)
-
-
-def _vista_teorica_chirp(
-    valor: int, N: int, ancho_banda: float, muestras_por_muestra: int
-) -> tuple[MuestrasReales, MuestrasReales, MuestrasReales, MuestrasReales]:
-    """Construye una representación continua y sobreamuestreada para dibujar."""
-    tiempo = np.linspace(0, N / ancho_banda, N * muestras_por_muestra + 1)
-    fase = 2 * np.pi * _fase_sierra(tiempo, valor, N, ancho_banda)
-    frecuencia = np.mod(valor + 2 * ancho_banda * tiempo, N) * ancho_banda / N
-    return tiempo, np.cos(fase) / np.sqrt(N), np.sin(fase) / np.sqrt(N), frecuencia
-
-
 def _guardar_vista_chirp(
     vistas: Sequence[tuple[MuestrasReales, MuestrasReales, MuestrasReales, MuestrasReales]],
     etiquetas: Sequence[str],
@@ -70,7 +49,11 @@ def _guardar_vista_chirp(
 
     axes[0].set(title=f"{descripcion}\nParte real", xlabel="Tiempo [ms]", ylabel="Amplitud")
     axes[1].set(title="Parte imaginaria", xlabel="Tiempo [ms]", ylabel="Amplitud")
-    axes[2].set(title="Frecuencia instantánea", xlabel="Tiempo [ms]", ylabel="Frecuencia [kHz]")
+    axes[2].set(
+        title="Índice [(s + k) mod N] de la ecuación (3)",
+        xlabel="Tiempo [ms]",
+        ylabel="Índice × B/N [kHz]",
+    )
     for ax in axes:
         for limite in limites_ms:
             ax.axvline(limite, color="gray", linestyle="--", alpha=0.5)
@@ -88,18 +71,14 @@ def guardar_graficos(
     enviados: Sequence[int],
     estimados: Sequence[int],
     ancho_banda: float = ANCHO_BANDA,
-    muestras_por_muestra: int = 16,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, Path]:
     """Guarda una trama de símbolos en gráficos temporales y espectrales comunes.
 
     Todos los símbolos aparecen uno después de otro en el mismo eje temporal.
-    Las líneas verticales grises marcan dónde termina cada símbolo. La figura
-    discreta contiene sólo las ``N`` muestras que se transmiten por símbolo;
-    la teórica dibuja el modelo continuo entre ellas. El espectro superpone una
-    curva por cada recepción para comparar los bins detectados.
-
-    ``muestras_por_muestra`` controla sólo la densidad de la línea teórica.
-    Por ejemplo, 16 produce ``16 * N + 1`` puntos para verla suave.
+    Las líneas verticales grises marcan dónde termina cada símbolo. Todas las
+    curvas se obtienen de las ``N`` muestras de la ecuación (3) del artículo;
+    no se introduce una extensión continua. El espectro superpone una curva
+    por cada recepción para comparar los bins detectados.
     """
     CARPETA_GRAFICOS.mkdir(exist_ok=True)
     if not chirps:
@@ -120,19 +99,13 @@ def guardar_graficos(
 
     # Cada vista se desplaza Ts para que toda la trama quede en un único gráfico.
     vistas_discretas = []
-    vistas_teoricas = []
     for indice, (chirp, enviado) in enumerate(zip(chirps, enviados)):
         desplazamiento = indice * duracion_simbolo
         tiempo_discreto = desplazamiento + k / ancho_banda
-        frecuencia_discreta = np.mod(enviado + 2 * k, N) * ancho_banda / N
+        indice_ecuacion = np.mod(enviado + k, N) * ancho_banda / N
         vistas_discretas.append(
-            (tiempo_discreto, chirp.real, chirp.imag, frecuencia_discreta)
+            (tiempo_discreto, chirp.real, chirp.imag, indice_ecuacion)
         )
-
-        tiempo, real, imaginaria, frecuencia = _vista_teorica_chirp(
-            enviado, N, ancho_banda, muestras_por_muestra
-        )
-        vistas_teoricas.append((desplazamiento + tiempo, real, imaginaria, frecuencia))
 
     ruta_muestras = _guardar_vista_chirp(
         vistas_discretas,
@@ -140,15 +113,6 @@ def guardar_graficos(
         limites_ms,
         "chirp_muestras_discretas.png",
         f"Trama discreta: {len(chirps)} símbolos de N={N} muestras",
-        "-",
-    )
-
-    ruta_teorico = _guardar_vista_chirp(
-        vistas_teoricas,
-        etiquetas,
-        limites_ms,
-        "chirp_teorico.png",
-        f"Modelo teórico: {len(chirps)} símbolos ({muestras_por_muestra}× más puntos)",
         "-",
     )
 
@@ -167,7 +131,7 @@ def guardar_graficos(
     ruta_espectro = CARPETA_GRAFICOS / "espectro_dechirp.png"
     fig.savefig(ruta_espectro, dpi=160)
     plt.close(fig)
-    return ruta_muestras, ruta_teorico, ruta_espectro
+    return ruta_muestras, ruta_espectro
 
 
 def main() -> None:
@@ -187,12 +151,12 @@ def main() -> None:
     espectros = [resultado[2] for resultado in resultados]
 
     assert estimados == enviados
-    ruta_muestras, ruta_teorico, ruta_espectro = guardar_graficos(
+    ruta_muestras, ruta_espectro = guardar_graficos(
         chirps, espectros, enviados, estimados
     )
     for bits, enviado, estimado in zip(simbolos, enviados, estimados):
         print(f"Enviado: {bits} (s={enviado}); detectado: s={estimado}")
-    print(f"Gráficos guardados en: {ruta_muestras}, {ruta_teorico} y {ruta_espectro}")
+    print(f"Gráficos guardados en: {ruta_muestras} y {ruta_espectro}")
 
 
 if __name__ == "__main__":
